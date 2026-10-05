@@ -1,3 +1,4 @@
+<!-- https://blog.scottlogic.com/2020/01/03/webassembly-sudoku-solver.html -->
 <!doctype html>
 <html lang="en">
   <head>
@@ -103,7 +104,6 @@
           cv.imshow("canvasInput", src);
           await processSudokuGrid(src);
           src.delete();
-          console.log("deleted src");
         };
       });
 
@@ -217,8 +217,10 @@
         let M = cv.getPerspectiveTransform(srcTri, dstTri);
         cv.warpPerspective(thresh, warped, M, dsize);
 
+        const cleaned = cleanGridLines(warped);
+
         // 5. Segment and Recognize Cells
-        await segmentAndPredict(warped);
+        await segmentAndPredict(cleaned);
 
         // Cleanup Mats
         cleanup([
@@ -232,6 +234,7 @@
           srcTri,
           dstTri,
           M,
+          cleaned,
         ]);
       }
 
@@ -270,7 +273,6 @@
             gridDiv.appendChild(cellEl);
 
             cellMat.delete();
-            console.log("deleted cel mat");
           }
         }
         status.innerText = "Extraction complete.";
@@ -285,6 +287,7 @@
         let inverted = new cv.Mat();
         cv.bitwise_not(cellMat, inverted);
 
+        /*
         let padded = new cv.Mat();
         let denoised = new cv.Mat();
         let dst = new cv.Mat();
@@ -303,6 +306,7 @@
         );
 
         cv.medianBlur(padded, denoised, 3);
+        
 
         // Step 4: Crop the image back to its original size to remove the border
         let rect = new cv.Rect(
@@ -312,22 +316,76 @@
           inverted.rows,
         );
         dst = denoised.roi(rect);
+        cv.imshow(tempCanvas, dst);
+        */
+
+        let denoised = new cv.Mat();
+        cv.medianBlur(inverted, denoised, 3);
+        let dst = new cv.Mat();
+        let M = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+        // MORPH_OPEN removes small white dots/noise
+        cv.morphologyEx(denoised, dst, cv.MORPH_OPEN, M);
 
         cv.imshow(tempCanvas, dst);
         document.body.appendChild(tempCanvas);
 
         const image = RawImage.fromCanvas(tempCanvas);
         const output = await ocr(image);
-        console.log("running inference", output);
+        console.log("running inference", output[0].generated_text);
         return output[0].generated_text;
-        cleanup([inverted, padded, denoised, dst]);
+        // cleanup([inverted, padded, denoised, dst]);
+        cleanup([inverted, denoised, dst]);
       }
 
       function cleanup(matArray) {
         matArray.forEach((mat) => {
           if (mat) mat.delete();
-          console.log("delted mat");
         });
+      }
+
+      function cleanGridLines(srcMat) {
+        // Assuming 'srcMat' is a grayscale and thresholded cv.Mat of the warped sudoku grid
+        let processedMat = new cv.Mat();
+        let horizontal = srcMat.clone();
+        let vertical = srcMat.clone();
+
+        // Specify scale/size for kernels (adjust based on your grid resolution)
+        let scale = 15;
+
+        // Create horizontal kernel and extract horizontal lines
+        let horizontalSize = horizontal.cols / scale;
+        let horizontalKernel = cv.getStructuringElement(
+          cv.MORPH_RECT,
+          new cv.Size(horizontalSize, 1),
+        );
+        cv.erode(horizontal, horizontal, horizontalKernel);
+        cv.dilate(horizontal, horizontal, horizontalKernel);
+
+        // Create vertical kernel and extract vertical lines
+        let verticalSize = vertical.rows / scale;
+        let verticalKernel = cv.getStructuringElement(
+          cv.MORPH_RECT,
+          new cv.Size(1, verticalSize),
+        );
+        cv.erode(vertical, vertical, verticalKernel);
+        cv.dilate(vertical, vertical, verticalKernel);
+
+        // Combine lines
+        let gridLines = new cv.Mat();
+        cv.add(horizontal, vertical, gridLines);
+
+        // Subtract the grid lines from the original thresholded image to leave only digits
+        cv.subtract(srcMat, gridLines, processedMat);
+
+        // Clean up memory
+        cleanup([
+          horizontal,
+          vertical,
+          horizontalKernel,
+          verticalKernel,
+          gridLines,
+        ]);
+        return processedMat;
       }
     </script>
   </body>
